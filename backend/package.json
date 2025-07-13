@@ -1,0 +1,30 @@
+{
+  "name": "collaborative-editor-backend",
+  "version": "1.0.0",
+  "description": "Backend server for collaborative document editor",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "multer": "^2.0.1",
+    "ws": "^8.18.3",
+    "y-websocket": "^1.5.4",
+    "yjs": "^13.6.10"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "keywords": [
+    "yjs",
+    "websocket",
+    "collaborative",
+    "editor"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}
