@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const WebSocket = require('ws');
 const http = require('http');
 const cors = require('cors');
@@ -7,7 +8,11 @@ const path = require('path');
 const fs = require('fs');
 require('dotenv').config();
 
-// Import y-websocket utilities with better error handling
+// Import routes
+const authRoutes = require('./routes/auth');
+const documentRoutes = require('./routes/documents');
+
+// Import y-websocket utilities
 let setupWSConnection;
 try {
   setupWSConnection = require('y-websocket/bin/utils').setupWSConnection;
@@ -19,6 +24,14 @@ try {
 
 const app = express();
 const server = http.createServer(app);
+
+// MongoDB connection
+mongoose.connect(process.env.MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+.then(() => console.log('✅ Connected to MongoDB'))
+.catch(err => console.error('❌ MongoDB connection error:', err));
 
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, 'uploads');
@@ -43,7 +56,6 @@ const upload = multer({
     fileSize: 10 * 1024 * 1024, // 10MB limit
   },
   fileFilter: (req, file, cb) => {
-    // Allow images only
     if (file.mimetype.startsWith('image/')) {
       cb(null, true);
     } else {
@@ -52,7 +64,7 @@ const upload = multer({
   }
 });
 
-// Enable CORS
+// Middleware
 app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:3000',
   credentials: true,
@@ -71,12 +83,17 @@ app.use('/uploads', express.static(uploadsDir, {
   }
 }));
 
+// Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/documents', documentRoutes);
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
-    websocket: 'Available'
+    websocket: 'Available',
+    database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected'
   });
 });
 
@@ -120,11 +137,9 @@ app.post('/upload-image', (req, res) => {
 const wss = new WebSocket.Server({ 
   server,
   verifyClient: (info) => {
-    return true; // Accept all connections for now
+    return true;
   }
 });
-
-console.log('WebSocket server created');
 
 // Track connected clients
 const connectedClients = new Map();
@@ -133,14 +148,14 @@ wss.on('connection', (ws, req) => {
   const clientId = Date.now() + '-' + Math.random();
   connectedClients.set(clientId, ws);
   
-  console.log(`New WebSocket connection established (${clientId})`);
-  console.log(`Total connected clients: ${connectedClients.size}`);
+  console.log(`🔌 New WebSocket connection (${clientId})`);
+  console.log(`👥 Total connected clients: ${connectedClients.size}`);
 
   // Setup Yjs WebSocket connection
   try {
     setupWSConnection(ws, req, {
       docName: req.url?.slice(1) || 'default-doc',
-      gc: true // Enable garbage collection
+      gc: true
     });
   } catch (error) {
     console.error('Error setting up Yjs connection:', error);
@@ -148,20 +163,17 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
-  // Handle connection close
   ws.on('close', (code, reason) => {
     connectedClients.delete(clientId);
-    console.log(`WebSocket connection closed (${clientId}): ${code} ${reason}`);
-    console.log(`Total connected clients: ${connectedClients.size}`);
+    console.log(`🔌 WebSocket connection closed (${clientId}): ${code} ${reason}`);
+    console.log(`👥 Total connected clients: ${connectedClients.size}`);
   });
 
-  // Handle connection errors
   ws.on('error', (error) => {
-    console.error(`WebSocket error (${clientId}):`, error);
+    console.error(`❌ WebSocket error (${clientId}):`, error);
     connectedClients.delete(clientId);
   });
 
-  // Send initial connection confirmation
   try {
     ws.send(JSON.stringify({
       type: 'connection-established',
@@ -173,18 +185,18 @@ wss.on('connection', (ws, req) => {
   }
 });
 
-// Handle WebSocket server errors
 wss.on('error', (error) => {
   console.error('WebSocket server error:', error);
 });
 
 // API endpoint to check server status
-app.get('/status', (req, res) => {
+app.get('/api/status', (req, res) => {
   res.json({
     status: 'running',
     connections: connectedClients.size,
     uptime: process.uptime(),
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected'
   });
 });
 
@@ -206,32 +218,34 @@ server.listen(PORT, () => {
   console.log(`📡 WebSocket server ready at ws://localhost:${PORT}`);
   console.log(`🔗 Health check: http://localhost:${PORT}/health`);
   console.log(`📁 File uploads: http://localhost:${PORT}/uploads/`);
-  console.log(`📊 Status endpoint: http://localhost:${PORT}/status`);
+  console.log(`📊 Status endpoint: http://localhost:${PORT}/api/status`);
+  console.log(`🔐 Auth API: http://localhost:${PORT}/api/auth`);
+  console.log(`📄 Documents API: http://localhost:${PORT}/api/documents`);
 });
 
 // Graceful shutdown
 const shutdown = (signal) => {
   console.log(`\n🔄 Received ${signal}, shutting down gracefully...`);
   
-  // Close WebSocket connections
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
       client.close(1001, 'Server shutting down');
     }
   });
   
-  // Close WebSocket server
   wss.close(() => {
     console.log('WebSocket server closed');
   });
   
-  // Close HTTP server
+  mongoose.connection.close(() => {
+    console.log('MongoDB connection closed');
+  });
+  
   server.close(() => {
     console.log('✅ HTTP server closed');
     process.exit(0);
   });
   
-  // Force exit after 10 seconds
   setTimeout(() => {
     console.error('❌ Could not close connections in time, forcefully shutting down');
     process.exit(1);
@@ -241,7 +255,6 @@ const shutdown = (signal) => {
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-// Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error);
   shutdown('UNCAUGHT_EXCEPTION');
